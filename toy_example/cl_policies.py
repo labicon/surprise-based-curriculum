@@ -159,7 +159,7 @@ class TeacherReplayBuffer(object):
 
     def sample_batch(self, batch_size):
         samples = Transition([], [], [], [], [])
-        indxs = np.random.choice(len(self.memory.state), size = batch_size, replace = False)
+        indxs = np.random.choice(len(self.memory.state), size = batch_size, replace = True)
         if len(self.memory.state) < self.size: 
             indxs = indxs[0:len(self.memory.state)]
         
@@ -196,7 +196,7 @@ class Training():
         self.surprise = []
         self.t_rew = []
         self.s_rew = []
-        self.states_vis = torch.zeros([1,2])
+        self.states_vis = torch.zeros([1,4])
         self.actions_vis = []
 
         self.t_surprise = []
@@ -319,9 +319,9 @@ class Training():
             
             
             actor, value = teacher_model.forward(states)
-            rew_sup = self.surprise_reward(rewards, probs, student_rewards, student_model, states, actions, new_states, t_surprise_prob, s_surprise_prob)        
+            # rew_sup = self.surprise_reward(rewards, probs, student_rewards, student_model, states, actions, new_states, t_surprise_prob, s_surprise_prob)        
+            rew_sup = rewards
             A = rew_sup - value.detach()
-            #A = rewards - value.detach()
             #normalize advantage ? 
             A = (A - A.mean()) / (A.std()+1e-10) 
             
