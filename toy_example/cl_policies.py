@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 
+
 import numpy as np
 import torch
 import torch.nn as nn
@@ -42,14 +43,24 @@ class TeacherModel(nn.Module):
         critic = self.critic(x)
         return actor, critic
     
-
+    def rtg(self, rewards):
+        batch_rtg = []
+        #print(rewards)
+        discounted = 0
+        #print(ep_rew)
+        for rew in reversed(rewards): 
+            discounted = rew + discounted *self.gamma 
+            batch_rtg.insert(0, discounted)
+        batch_rtg = torch.tensor(batch_rtg)
+        
+        return batch_rtg
     def rollout(self, env, device, model):
         rollouts = Transition([], [], [], [], [])
         with torch.no_grad(): 
             for i in range(self.timesteps_per_batch):
                 states = env.reset()[0]
                 done = False
-
+                ep_rew = []
                 for j in range(self.max_timesteps_per_episode):
                     '''
                     Get action from policy model
@@ -63,16 +74,21 @@ class TeacherModel(nn.Module):
                     
                     
                     new_states, rewards, done, _, _ = env.step(action)
-
+                    ep_rew = np.append(ep_rew, rewards)
                     rollouts.state.append(states)
                     rollouts.action.append(action)
-                    rollouts.reward.append(rewards)
+                    #rollouts.reward.append(rewards)
                     rollouts.new_state.append(torch.tensor(new_states))
                     rollouts.log_prob.append(prob.numpy())
 
                     states = new_states
                     if done:
                         break
+                rtg = self.rtg(ep_rew)
+                
+            
+                for k in range(len(rtg)):
+                    rollouts.reward.append(rtg[k])
 
         return rollouts
 
@@ -119,7 +135,8 @@ class StudentModel(nn.Module):
                     states = torch.tensor(states)
                     actor, critic = self.forward(states)
                     action_dist = Categorical(logits=actor.unsqueeze(-2))
-                    action = action_dist.probs.argmax(-1)
+                    #action = action_dist.probs.argmax(-1)
+                    action = action_dist.sample()
                     log_prob = action_dist.log_prob(action)
                     action = action.numpy()[0]
                     new_states, reward, dones, infos, _ = env.step(action)
@@ -180,7 +197,7 @@ class Training():
         self.lr = 0.005                                 # Learning rate of actor optimizer
         self.gamma = 0.95                               # Discount factor to be applied when calculating Rewards-To-Go
         self.clip = 0.2                                 # Recommended 0.2, helps define the threshold to clip the ratio during SGA
-        self.iters = 500
+        self.iters = 100
         
         self.render_every_i = 10                        # Only render every n iterations
         self.save_freq = 10                             # How often we save in number of iterations
@@ -204,13 +221,13 @@ class Training():
         
     def plot(self):
         fig1, ax1 = plt.subplots(2,1)
-        ax1[0].plot(self.its, self.surprise, label = "Reward w/ Surprise")
+        #ax1[0].plot(self.its, self.surprise, label = "Reward w/ Surprise")
         ax1[0].plot(self.its, self.t_rew, label = "Teacher reward")
-        ax1[0].plot(self.its, self.s_rew, label = "Student reward")
-        ax1[1].plot(self.its, self.t_surprise, label = "Teacher surprise") 
-        ax1[1].plot(self.its, self.s_surprise, label = "Student surprise")
+        #ax1[0].plot(self.its, self.s_rew, label = "Student reward")
+        #ax1[1].plot(self.its, self.t_surprise, label = "Teacher surprise") 
+        #ax1[1].plot(self.its, self.s_surprise, label = "Student surprise")
         ax1[0].legend()
-        ax1[1].legend()
+        #ax1[1].legend()
         #ax1[0].set_yscale('symlog')
         #ax1[1].set_yscale('symlog')
         
@@ -254,18 +271,18 @@ class Training():
         return  surprise_reward.float()
     
     
-    def train_loop(self, env, teacher_model, student_model, student_tar): 
+    def train_loop(self, env, teacher_model, student_model): 
         device = 'cuda' if torch.cuda.is_available() else 'cpu'
     
         teacher_a_optim = torch.optim.Adam(teacher_model.parameters(), lr = self.lr)
         teacher_c_optim = torch.optim.Adam(teacher_model.parameters(), lr = self.lr)
         
-        student_a_optim = torch.optim.Adam(student_model.parameters(), lr = self.lr )
-        student_c_optim = torch.optim.Adam(student_model.parameters(), lr = self.lr )
+        #student_a_optim = torch.optim.Adam(student_model.parameters(), lr = self.lr )
+        #student_c_optim = torch.optim.Adam(student_model.parameters(), lr = self.lr )
 
         batch_size = self.timesteps_per_batch*self.max_timesteps_per_episode
         
-        student_rewards = torch.zeros(batch_size)
+        #student_rewards = torch.zeros(batch_size)
         
         
         states = env.reset()[0]
@@ -275,7 +292,7 @@ class Training():
         teacher_memory = TeacherReplayBuffer(2*batch_size, state_dim, action_dim)
         
         t_surprise_prob = GaussianProcessRegressor()
-        s_surprise_prob = GaussianProcessRegressor()
+        #s_surprise_prob = GaussianProcessRegressor()
 
         reset_count = 0
         update_count = 0 
@@ -304,7 +321,7 @@ class Training():
             reg_input = torch.hstack((states, actions.reshape([actions.shape[0], 1])))
             real_out = new_states
             t_surprise_prob.fit(reg_input, real_out)
-            
+            '''
             s_rollouts = teacher_model.rollout(env, device, student_model)
             s_states = torch.vstack(s_rollouts.state)
             s_new_states = torch.vstack(s_rollouts.new_state)
@@ -316,7 +333,7 @@ class Training():
             s_reg_input = torch.hstack((s_states, s_actions.reshape([s_actions.shape[0], 1])))
             s_real_out = s_new_states
             s_surprise_prob.fit(s_reg_input, s_real_out)
-            
+            '''
             
             actor, value = teacher_model.forward(states)
             # rew_sup = self.surprise_reward(rewards, probs, student_rewards, student_model, states, actions, new_states, t_surprise_prob, s_surprise_prob)        
@@ -356,7 +373,7 @@ class Training():
                 cl.backward()
                 teacher_c_optim.step
                 
-            
+            '''
             for k in range(self.n_updates_per_iteration): 
                 if k ==0: 
                     print("student training")
@@ -393,29 +410,24 @@ class Training():
                 al.backward()
                 student_a_optim.step()
 
-                
+          '''  
                 
             #test student network -- rollouts? 
             #update student reward 
             student_rewards, _ = torch.tensor(student_model.validate(env))
             if i % 10 == 0: 
-                print("teacher extrinsic reward: " + str(batch_rewards.mean().item()))
-                print("teacher surprise bonus reward: " + str(rew_sup.mean().item()))
-                print("average student reward:" + str(student_rewards.mean().item()))
+                print("Avg. Teacher extrinsic reward / batch: " + str((rewards.sum()/self.timesteps_per_batch).item()))
+                #print("teacher surprise bonus reward: " + str(rew_sup.mean().item()))
+                #print("average student reward:" + str(student_rewards.mean().item()))
             
             self.its = np.append(self.its, i)
-            self.surprise = np.append(self.surprise, rew_sup.mean().item())
-            self.t_rew = np.append(self.t_rew, batch_rewards.mean().item())
-            self.s_rew = np.append(self.s_rew, student_rewards.mean().item())
+            #self.surprise = np.append(self.surprise, rew_sup.mean().item())
+            self.t_rew = np.append(self.t_rew, (rewards.sum()/self.timesteps_per_batch).item())
+            #self.s_rew = np.append(self.s_rew, student_rewards.mean().item())
             self.states_vis = torch.cat([self.states_vis, states])
             self.actions_vis = np.append(self.actions_vis, actions.numpy())
 
-            #update target network every %% 
-            update_count += 1 
-            if update_count == self.update_every: 
-                for target_param, param in zip(student_tar.parameters(), student_model.parameters()):
-                    target_param.data.copy_(param.data)
-                update_count = 0 
+           
             
             reset_count += 1 
             if reset_count == self.reset_every: 
